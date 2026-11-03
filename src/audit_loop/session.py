@@ -55,14 +55,22 @@ class Outcome:
     detail: str = ""
 
 
+NO_HUMAN = ("No human is available: this is an unattended run. Use your best judgment, follow "
+            "CLAUDE.md, and keep going without asking.")
+
+
 async def allow_everything(tool_name, tool_input, context) -> PermissionResultAllow:
     """Approve every permission prompt: the run is unattended and meant to be unrestricted.
 
     bypassPermissions already approves almost everything; this catches the explicit ``ask``
-    rules a user's settings may carry (sudo, rm -r, ...), which would otherwise be denied.
-    Deny rules still win in every mode.
+    rules a user's settings may carry (sudo, rm -r, ...) and AskUserQuestion, which reaches
+    the callback in every mode and is answered with a free-form ``response`` saying nobody
+    is there. Deny rules still win in every mode.
+    https://code.claude.com/docs/en/agent-sdk/user-input#response-format
     """
-    return PermissionResultAllow()
+    if tool_name == "AskUserQuestion":
+        return PermissionResultAllow(updated_input={**tool_input, "response": NO_HUMAN})
+    return PermissionResultAllow(updated_input=tool_input)
 
 
 def agent_env(credentials: dict[str, str]) -> dict[str, str]:

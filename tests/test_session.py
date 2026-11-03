@@ -27,6 +27,14 @@ def test_classify():
 def test_allow_everything_approves_ask_rules():
     decision = asyncio.run(allow_everything("Bash", {"command": "sudo ls"}, ToolPermissionContext()))
     assert isinstance(decision, PermissionResultAllow)
+    assert decision.updated_input == {"command": "sudo ls"}
+
+
+def test_ask_user_question_is_answered_without_a_human():
+    questions = {"questions": [{"question": "Which?", "header": "H", "options": [], "multiSelect": False}]}
+    decision = asyncio.run(allow_everything("AskUserQuestion", questions, ToolPermissionContext()))
+    assert decision.updated_input["questions"] == questions["questions"]
+    assert "unattended" in decision.updated_input["response"]
 
 
 def test_cli_flags_are_unrestricted_opus_xhigh():
