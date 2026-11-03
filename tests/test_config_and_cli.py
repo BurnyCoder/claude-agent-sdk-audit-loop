@@ -1,4 +1,5 @@
 import re
+from datetime import datetime, timezone
 import sys
 from pathlib import Path
 
@@ -54,3 +55,11 @@ def test_committed_files_have_no_machine_paths():
              REPO / "README.md", REPO / ".env.example", REPO / "pyproject.toml"]
     hits = [f"{f.name}: {m.group()}" for f in files for m in pattern.finditer(f.read_text(encoding="utf-8"))]
     assert hits == []
+
+
+def test_stop_at_parses_with_and_without_offset(monkeypatch):
+    monkeypatch.delenv("AUDIT_STOP_AT", raising=False)
+    cfg = build_config(env_files=[], overrides={"AUDIT_STOP_AT": "2026-11-04T23:00:00+00:00"})
+    assert cfg.stop_at == datetime(2026, 11, 4, 23, tzinfo=timezone.utc)
+    assert build_config(env_files=[], overrides={"AUDIT_STOP_AT": "2026-11-04T20:00"}).stop_at.tzinfo is not None
+    assert build_config(env_files=[]).stop_at is None

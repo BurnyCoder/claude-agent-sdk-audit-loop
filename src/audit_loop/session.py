@@ -29,21 +29,24 @@ from claude_agent_sdk import (
     query,
 )
 
-from audit_loop.config import Config
+from audit_loop.config import Config, claude_config_dir
 from audit_loop.discover import git
 from audit_loop.logs import log
 
 # We set can_use_tool on purpose next to bypassPermissions (see options()); silence the advisory.
 warnings.filterwarnings("ignore", category=CanUseToolShadowedWarning)
 
-# Opus 5.5 list prices in USD per million tokens. Used only when a session dies before its
-# ResultMessage (which carries the SDK's own estimate), so the shared budget never undercounts.
-_FALLBACK_PRICE_PER_MTOK = {
+# Opus 5.5 list prices in USD per million tokens; cache writes cost 1.25x input (5-minute TTL)
+# or 2x (1-hour TTL), and web search is $10 per 1,000 searches:
+# https://platform.claude.com/docs/en/about-claude/pricing
+_PRICE_PER_MTOK = {
     "input_tokens": 4.0,
     "output_tokens": 20.0,
     "cache_read_input_tokens": 0.20,
-    "cache_creation_input_tokens": 5.0,
+    "ephemeral_5m_input_tokens": 5.0,
+    "ephemeral_1h_input_tokens": 8.0,
 }
+_WEB_SEARCH_USD = 0.01
 
 
 @dataclass
@@ -80,7 +83,10 @@ def agent_env(credentials: dict[str, str]) -> dict[str, str]:
     header". The CLI sends extra headers from ANTHROPIC_CUSTOM_HEADERS ("Name: Value"):
     https://code.claude.com/docs/en/env-vars
     """
-    env = {**credentials, "CLAUDE_AGENT_SDK_CLIENT_APP": "audit-loop/0.1"}
+    # CLAUDE_CODE_SUBPROCESS_ENV_SCRUB keeps the key for the CLI's own calls but strips credentials
+    # from the Bash/hook/MCP processes it starts (GitHub tokens stay), so an audited repo's own
+    # scripts cannot quietly spend this key: https://code.claude.com/docs/en/env-vars
+    env = {**credentials, "CLAUDE_AGENT_SDK_CLIENT_APP": "audit-loop/0.1", "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB": "1"}
     if workspace := credentials.get("ANTHROPIC_WORKSPACE_ID"):
         env["ANTHROPIC_CUSTOM_HEADERS"] = f"anthropic-workspace-id: {workspace}"
     return env
@@ -126,12 +132,42 @@ def classify(api_errors: set[str], error_text: str, result: ResultMessage | None
     return "error"
 
 
+def usage_cost(usage: dict) -> float:
+    """List-price USD of one API response's ``usage`` block."""
+    cache_writes = usage.get("cache_creation") or {"ephemeral_5m_input_tokens": usage.get("cache_creation_input_tokens", 0)}
+    tokens = {**usage, **cache_writes}
+    searches = (usage.get("server_tool_use") or {}).get("web_search_requests", 0)
+    return sum(tokens.get(k, 0) * p for k, p in _PRICE_PER_MTOK.items()) / 1e6 + searches * _WEB_SEARCH_USD
+
+
 def estimate_cost(usage_by_message: dict[str, dict]) -> float:
-    return sum(
-        usage.get(key, 0) * price / 1e6
-        for usage in usage_by_message.values()
-        for key, price in _FALLBACK_PRICE_PER_MTOK.items()
-    )
+    return sum(usage_cost(u) for u in usage_by_message.values())
+
+
+def transcript_cost(session_id: str | None, config_dir: Path) -> float | None:
+    """List-price cost of everything a session's CLI transcript records, subagents included.
+
+    The CLI writes every API response with its usage to
+    ``<config dir>/projects/<project>/<session>.jsonl`` and subagents to
+    ``<session>/subagents/*.jsonl`` (https://code.claude.com/docs/en/sessions). Counting each
+    message id once reproduced the SDK's own figure to within $0.0002 on test sessions, and
+    unlike the streamed messages it also covers sessions that crash. Returns None if absent.
+    """
+    if not session_id:
+        return None
+    projects = config_dir / "projects"
+    files = [*projects.glob(f"*/{session_id}.jsonl"), *projects.glob(f"*/{session_id}/subagents/*.jsonl")]
+    usage: dict[str, dict] = {}
+    for path in files:
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            try:
+                entry = json.loads(line)
+            except ValueError:
+                continue
+            message = entry.get("message") if isinstance(entry, dict) else None
+            if entry.get("type") == "assistant" and isinstance(message, dict) and message.get("usage") and message.get("id"):
+                usage[message["id"]] = message["usage"]
+    return estimate_cost(usage) if files else None
 
 
 def _block_text(block) -> str:
@@ -185,9 +221,15 @@ def log_message(message) -> None:
 
 
 async def run_session(repo: Path, prompt: str, cfg: Config, budget_usd: float,
-                      resume: str | None = None, **extra) -> Outcome:
-    """Run one query() to completion, logging everything, and classify how it ended."""
-    out = Outcome()
+                      resume: str | None = None, spent_before: float = 0.0, **extra) -> Outcome:
+    """Run one query() to completion, logging everything, and classify how it ended.
+
+    Every 20 API calls the session's real spend so far is read from its CLI transcript
+    (minus ``spent_before``, what earlier runs of a resumed session already cost); at
+    ``budget_usd`` the session is stopped, so the cap holds even if the CLI's own estimate lags.
+    """
+    out = Outcome(session_id=resume)
+    capped = False
     result: ResultMessage | None = None
     api_errors: set[str] = set()
     error_text: list[str] = []
@@ -209,9 +251,15 @@ async def run_session(repo: Path, prompt: str, cfg: Config, budget_usd: float,
                         if message.usage and message.message_id:
                             new = message.message_id not in usage_by_message
                             usage_by_message[message.message_id] = message.usage
-                            if new and len(usage_by_message) % 20 == 0:  # live, approximate
-                                log.info("COST so far ~$%.2f (%d API calls, list-price estimate)",
-                                         estimate_cost(usage_by_message), len(usage_by_message))
+                            if new and len(usage_by_message) % 20 == 0:
+                                seen = transcript_cost(out.session_id, claude_config_dir())
+                                spent = (seen - spent_before) if seen is not None else estimate_cost(usage_by_message)
+                                log.info("COST this session so far $%.2f of $%.2f budget (%d API calls seen)",
+                                         spent, budget_usd, len(usage_by_message))
+                                if spent >= budget_usd:
+                                    log.info("Budget reached; stopping the session")
+                                    capped = True
+                                    break
                     elif isinstance(message, ResultMessage):
                         result = message
     except TimeoutError:
@@ -236,6 +284,8 @@ async def run_session(repo: Path, prompt: str, cfg: Config, budget_usd: float,
     status = classify(api_errors, "\n".join(error_text), result, api_status)
     if crashed and status == "error":
         status = "transient"
+    if capped and status != "billing_exhausted":
+        status = "budget_cap"
     if out.status != "timeout" or status == "billing_exhausted":
         out.status = status
     out.detail = "\n".join(t for t in error_text if t)[:500]

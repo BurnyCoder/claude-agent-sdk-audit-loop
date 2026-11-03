@@ -87,7 +87,7 @@ Session options, all documented in the [Python SDK reference](https://code.claud
 | `setting_sources` | `None` (user, project, local) | Loads `~/.claude/CLAUDE.md`, your settings and the project's `CLAUDE.md` |
 | `permission_mode` + `can_use_tool` | `bypassPermissions` + allow-all callback | Unattended; the callback also approves `ask` rules from your settings. Your `deny` rules still apply |
 | `model`, `effort`, `thinking` | `claude-opus-5-5`, `xhigh`, adaptive with summaries | Thinking summaries appear in the transcript |
-| `max_budget_usd` | cap minus ledger total | Enforces only the shared cap; there is no per-repository limit |
+| `max_budget_usd` | cap minus ledger total | Enforces only the shared cap; there is no per-repository limit. Backed by the loop's own transcript-based check |
 
 ## Stop conditions
 
@@ -102,7 +102,13 @@ Everything else continues:
 - **A finished round** starts a new one, so every repository is audited again, independently.
 - **A wall-clock guard** (`AUDIT_SESSION_TIMEOUT_MIN`, default 240) ends a stuck session.
 
-The SDK's cost figures are client-side estimates, not billing statements; compare them with the Console's usage page. The ledger records a session's cost when it ends. While a session runs, the transcript prints a `COST so far` line every 20 API calls, computed from token usage at Opus 5.5 list prices. The CLI also enforces `max_budget_usd` live against its own estimate.
+**How spend is counted.** Claude Code writes every API response, with its token usage, to the session transcript (`~/.claude/projects/<project>/<session>.jsonl`, plus `<session>/subagents/*.jsonl`). The loop prices those tokens at Opus 5.5 list prices, including 5-minute and 1-hour cache writes and web searches ([pricing](https://platform.claude.com/docs/en/about-claude/pricing)). On test sessions this reproduced the SDK's own figure to within $0.0002. Unlike the streamed messages, the transcript also covers subagents and sessions that crash.
+
+Every 20 API calls the transcript prints `COST this session so far`, and the session is stopped once it reaches the remaining budget. The ledger records the higher of the SDK's figure and the transcript's figure. These are still list-price estimates, not billing statements, so leave a little headroom below a hard limit and compare with the Console's usage page.
+
+**`AUDIT_STOP_AT`.** No session starts after this time, and a running session is cut off at it. Use it for credits that expire at a known time.
+
+**Agent subprocesses do not see the key.** Sessions set [`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`](https://code.claude.com/docs/en/env-vars), so Bash commands, hooks and MCP servers started by the agent get no Anthropic credentials (GitHub tokens stay). An audited repository's own scripts therefore cannot spend the budget through the inherited environment. They can still read a key from their own `.env`.
 
 ## Safety notes
 

@@ -8,19 +8,20 @@ rounds until the credits or the cap run out (exit 3).
 
 import argparse
 import asyncio
-import os
 import shlex
 import socket
 import subprocess
 import sys
 import time
+from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 
 from audit_loop import ledger
-from audit_loop.config import Config, build_config, scrub_inherited_claude_env
+from audit_loop.config import Config, build_config, claude_config_dir, scrub_inherited_claude_env
 from audit_loop.discover import Repo, discover
 from audit_loop.logs import log, session_log, setup_console
-from audit_loop.session import check, push_prompt, run_session, unpushed_commits
+from audit_loop.session import check, push_prompt, run_session, transcript_cost, unpushed_commits
 
 EXIT_EXHAUSTED = 3  # credits gone or the shared cap reached: stop everything
 EXIT_AUTH = 4  # the key is rejected: retrying cannot help
@@ -43,18 +44,28 @@ def audit_repo(repo: Repo, cfg: Config, round_no: int, scope: str, budget_usd: f
         log.info("=== AUDIT %s (%s), round %d, budget left $%.2f%s ===", repo.path, repo.slug, round_no,
                  budget_usd, f", resuming {resume}" if resume else "")
         prompt = CONTINUE_PROMPT if resume else cfg.prompt
-        outcome = asyncio.run(run_session(repo.path, prompt, cfg, budget_usd, resume=resume))
+        recorded = sum(r.get("cost_usd") or 0 for r in ledger.read(cfg.ledger) if resume and r.get("session_id") == resume)
+        outcome = asyncio.run(run_session(repo.path, prompt, cfg, budget_usd, resume=resume, spent_before=recorded))
         outcome.session_id = outcome.session_id or resume
         unpushed = unpushed_commits(repo.path)
         if unpushed and outcome.status == "ok" and outcome.session_id:
             log.info("=== %d unpushed commit(s); resuming the session to push them ===", len(unpushed))
-            follow = asyncio.run(run_session(repo.path, push_prompt(unpushed), cfg,
-                                             budget_usd - outcome.cost_usd, resume=outcome.session_id))
+            follow = asyncio.run(run_session(repo.path, push_prompt(unpushed), cfg, budget_usd - outcome.cost_usd,
+                                             resume=outcome.session_id, spent_before=recorded + outcome.cost_usd))
             outcome.cost_usd += follow.cost_usd
             outcome.turns += follow.turns
             if follow.status in ("billing_exhausted", "budget_cap", "auth_failed"):
                 outcome.status = follow.status
             unpushed = unpushed_commits(repo.path)
+        # The transcript counts every API call, subagents and crashed runs included; take it when it
+        # is higher, minus what earlier attempts of the same (resumed) session already recorded.
+        seen = transcript_cost(outcome.session_id, claude_config_dir())
+        if seen is not None:
+            recorded = sum(r.get("cost_usd") or 0 for r in ledger.read(cfg.ledger)
+                           if r.get("session_id") == outcome.session_id)
+            outcome.cost_usd = max(outcome.cost_usd, seen - recorded)
+        if outcome.status == "budget_cap":
+            outcome.detail = f"stopped at the shared cap of ${cfg.max_total_usd:.2f}. " + outcome.detail
         log.info("=== DONE %s: %s, $%.2f, %d turns, %d unpushed ===",
                  repo.path.name, outcome.status, outcome.cost_usd, outcome.turns, len(unpushed))
     return {
@@ -85,9 +96,15 @@ def run_loop(cfg: Config, rounds: int) -> int:
             if remaining < 0.05:
                 log.info("Spend cap of $%.2f reached; stopping", cfg.max_total_usd)
                 return EXIT_EXHAUSTED
+            minutes_left = (cfg.stop_at - datetime.now().astimezone()).total_seconds() / 60 if cfg.stop_at else None
+            if minutes_left is not None and minutes_left < 1:
+                log.info("Stop time %s reached; stopping", cfg.stop_at.isoformat())
+                return EXIT_EXHAUSTED
             previous = ledger.last_attempt(records, scope, str(repo.path), round_no)
             resume = previous["session_id"] if previous and previous["status"] == "transient" else None
-            record = audit_repo(repo, cfg, round_no, scope, remaining, resume)
+            session_cfg = cfg if minutes_left is None else replace(  # end the session by the stop time
+                cfg, session_timeout_min=min(cfg.session_timeout_min, minutes_left))
+            record = audit_repo(repo, session_cfg, round_no, scope, remaining, resume)
             ledger.append(cfg.ledger, record)
             status = record["status"]
             attempts = sum(r.get("scope") == scope and r["project"] == str(repo.path) and r["round"] == round_no
@@ -152,6 +169,7 @@ def parser() -> argparse.ArgumentParser:
     common.add_argument("--effort", help="low|medium|high|xhigh|max (AUDIT_EFFORT, default xhigh)")
     common.add_argument("--max-total-usd", help="stop when the ledger total reaches this (AUDIT_MAX_TOTAL_USD, default 100)")
     common.add_argument("--session-timeout-min", help="wall-clock guard per session (AUDIT_SESSION_TIMEOUT_MIN, default 240)")
+    common.add_argument("--stop-at", help="ISO time after which no session runs, e.g. when credits expire (AUDIT_STOP_AT)")
     common.add_argument("--keep-env", action="store_true",
                         help="keep inherited ANTHROPIC_*/CLAUDE* variables (e.g. your own gateway ANTHROPIC_BASE_URL)")
     p = argparse.ArgumentParser(prog="audit-loop", description=__doc__.splitlines()[0])
@@ -175,7 +193,7 @@ def main(argv: list[str] | None = None) -> int:
         return chain(args.commands)
     flags = {"AUDIT_LEDGER": args.ledger, "AUDIT_LOG_DIR": args.log_dir, "AUDIT_PROMPT_FILE": args.prompt_file,
              "AUDIT_MODEL": args.model, "AUDIT_EFFORT": args.effort, "AUDIT_MAX_TOTAL_USD": args.max_total_usd,
-             "AUDIT_SESSION_TIMEOUT_MIN": args.session_timeout_min}
+             "AUDIT_SESSION_TIMEOUT_MIN": args.session_timeout_min, "AUDIT_STOP_AT": args.stop_at}
     excludes = [name for value in args.exclude or [] for name in value.split(",") if name.strip()]
     cfg = build_config(args.root, excludes or None, args.env_file, flags)
     if not args.keep_env:
@@ -194,8 +212,7 @@ def main(argv: list[str] | None = None) -> int:
         log.info("No ANTHROPIC_API_KEY in the environment or the env files %s", args.env_file or [".env"])
         return EXIT_AUTH
     if args.command == "check":
-        config_dir = Path(os.environ.get("CLAUDE_CONFIG_DIR", "~/.claude")).expanduser()
-        return 0 if asyncio.run(check(cfg, config_dir / "CLAUDE.md")) else 1
+        return 0 if asyncio.run(check(cfg, claude_config_dir() / "CLAUDE.md")) else 1
     try:
         return run_loop(cfg, args.rounds)
     finally:
