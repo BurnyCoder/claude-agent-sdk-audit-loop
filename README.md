@@ -64,7 +64,7 @@ All settings also work as flags: `--root` (repeatable), `--exclude`, `--env-file
 `chain` runs commands in order, repeats the list, and stops when one of them exits 3 (credits or cap) or 4 (authentication). Point every step at the same ledger so the cap covers all of them. For example, Windows repos first, then the WSL ones, then again:
 
 ```bash
-audit-loop chain "audit-loop run --rounds 1" "wsl.exe -d Ubuntu --cd /mnt/c/path/to/this/folder -- bash -lc 'audit-loop run --rounds 1 --root ~/projects'"
+audit-loop chain "audit-loop run --rounds 1" "wsl.exe -d Ubuntu -- bash -lc 'cd <this folder as seen from WSL> && audit-loop run --rounds 1 --root ~/projects'"
 ```
 
 Commands are split POSIX-style, so quote with `'...'` and use forward slashes.
