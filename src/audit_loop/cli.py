@@ -27,12 +27,24 @@ EXIT_AUTH = 4  # the key is rejected: retrying cannot help
 STOP_CODES = (EXIT_EXHAUSTED, EXIT_AUTH)
 
 
-def audit_repo(repo: Repo, cfg: Config, round_no: int, scope: str, budget_usd: float) -> dict:
-    """Audit one repo (plus at most one push follow-up) and return its ledger record."""
+CONTINUE_PROMPT = ("Your previous session in this repository was cut off by a harness error. Continue the "
+                   "task from where you stopped; the original instructions still apply.")
+
+
+def audit_repo(repo: Repo, cfg: Config, round_no: int, scope: str, budget_usd: float,
+               resume: str | None = None) -> dict:
+    """Audit one repo (plus at most one push follow-up) and return its ledger record.
+
+    With ``resume`` (the session ID of a crashed attempt), the agent continues that session
+    instead of starting over, so the work already paid for is kept.
+    """
     start = time.time()
     with session_log(cfg.log_dir, repo.path.name) as log_path:
-        log.info("=== AUDIT %s (%s), round %d, budget left $%.2f ===", repo.path, repo.slug, round_no, budget_usd)
-        outcome = asyncio.run(run_session(repo.path, cfg.prompt, cfg, budget_usd))
+        log.info("=== AUDIT %s (%s), round %d, budget left $%.2f%s ===", repo.path, repo.slug, round_no,
+                 budget_usd, f", resuming {resume}" if resume else "")
+        prompt = CONTINUE_PROMPT if resume else cfg.prompt
+        outcome = asyncio.run(run_session(repo.path, prompt, cfg, budget_usd, resume=resume))
+        outcome.session_id = outcome.session_id or resume
         unpushed = unpushed_commits(repo.path)
         if unpushed and outcome.status == "ok" and outcome.session_id:
             log.info("=== %d unpushed commit(s); resuming the session to push them ===", len(unpushed))
@@ -65,14 +77,23 @@ def run_loop(cfg: Config, rounds: int) -> int:
     passes, failures, auth_failures = 0, 0, 0
     while rounds == 0 or passes < rounds:
         round_no, done = ledger.current_round(ledger.read(cfg.ledger), scope, [str(r.path) for r in repos])
-        for repo in (r for r in repos if str(r.path) not in done):
-            remaining = cfg.max_total_usd - ledger.total_cost(ledger.read(cfg.ledger))
+        queue = [r for r in repos if str(r.path) not in done]
+        while queue:
+            repo = queue[0]
+            records = ledger.read(cfg.ledger)
+            remaining = cfg.max_total_usd - ledger.total_cost(records)
             if remaining < 0.05:
                 log.info("Spend cap of $%.2f reached; stopping", cfg.max_total_usd)
                 return EXIT_EXHAUSTED
-            record = audit_repo(repo, cfg, round_no, scope, remaining)
+            previous = ledger.last_attempt(records, scope, str(repo.path), round_no)
+            resume = previous["session_id"] if previous and previous["status"] == "transient" else None
+            record = audit_repo(repo, cfg, round_no, scope, remaining, resume)
             ledger.append(cfg.ledger, record)
             status = record["status"]
+            attempts = sum(r.get("scope") == scope and r["project"] == str(repo.path) and r["round"] == round_no
+                           for r in ledger.read(cfg.ledger))
+            if status != "transient" or attempts >= ledger.MAX_ATTEMPTS:
+                queue.pop(0)  # otherwise retry (resume) the same repo after the backoff below
             if status in ("billing_exhausted", "budget_cap"):
                 log.info("Credits exhausted or cap reached (%s); stopping", status)
                 return EXIT_EXHAUSTED
@@ -84,7 +105,7 @@ def run_loop(cfg: Config, rounds: int) -> int:
             failures = 0 if status == "ok" else failures + 1
             if failures:  # transient, error, timeout, auth: back off 1, 2, 4, ... up to 10 minutes
                 delay = min(60 * 2 ** (failures - 1), 600)
-                log.info("Session ended with %s; waiting %d s before the next repo", status, delay)
+                log.info("Session ended with %s; waiting %d s", status, delay)
                 time.sleep(delay)
         passes += 1
     return 0

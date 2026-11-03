@@ -96,12 +96,13 @@ The only normal stops are:
 - The ledger total reaches `AUDIT_MAX_TOTAL_USD`. The last session gets exactly the remainder as its budget.
 
 Everything else continues:
-- **Rate limits, 5xx errors and other failures** back off and move on to the next repository.
+- **Rate limits, 5xx errors and harness crashes** back off, then resume the same session (same session ID, so paid-for work is kept). Each repository gets at most 3 attempts per round.
+- **Other failures** back off and move on to the next repository.
 - **Authentication failures** stop the loop after three attempts.
 - **A finished round** starts a new one, so every repository is audited again, independently.
 - **A wall-clock guard** (`AUDIT_SESSION_TIMEOUT_MIN`, default 240) ends a stuck session.
 
-The SDK's cost figures are client-side estimates, not billing statements; compare them with the Console's usage page.
+The SDK's cost figures are client-side estimates, not billing statements; compare them with the Console's usage page. The ledger records a session's cost when it ends. While a session runs, the transcript prints a `COST so far` line every 20 API calls, computed from token usage at Opus 5.5 list prices. The CLI also enforces `max_budget_usd` live against its own estimate.
 
 ## Safety notes
 

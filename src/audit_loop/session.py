@@ -101,6 +101,9 @@ def options(repo: Path, cfg: Config, budget_usd: float, resume: str | None = Non
         max_budget_usd=max(budget_usd, 0.01),  # only the shared cap; no per-repo limit
         resume=resume,
         env=agent_env(cfg.credentials),
+        # The SDK reads each CLI message into a 1 MB buffer by default; one Read of a PNG figure
+        # (base64 image) exceeded it and killed a session with CLIJSONDecodeError.
+        max_buffer_size=256 * 1024 * 1024,
         stderr=lambda line: log.info("[cli] %s", line.rstrip()),
         **extra,
     )
@@ -131,11 +134,19 @@ def estimate_cost(usage_by_message: dict[str, dict]) -> float:
     )
 
 
+def _block_text(block) -> str:
+    if not isinstance(block, dict):
+        return str(block)
+    if block.get("type") == "image":  # base64 pixels say nothing in a transcript
+        source = block.get("source", {})
+        return f"<image {source.get('media_type', '?')}, {len(source.get('data', ''))} base64 chars>"
+    return block.get("text", json.dumps(block, ensure_ascii=False))
+
+
 def _text(content) -> str:
     if isinstance(content, str) or content is None:
         return content or ""
-    return "\n".join(c.get("text", json.dumps(c, ensure_ascii=False)) if isinstance(c, dict) else str(c)
-                     for c in content)
+    return "\n".join(_block_text(c) for c in content)
 
 
 def log_message(message) -> None:
@@ -182,6 +193,7 @@ async def run_session(repo: Path, prompt: str, cfg: Config, budget_usd: float,
     error_text: list[str] = []
     api_status: int | None = None
     usage_by_message: dict[str, dict] = {}
+    crashed = False
     try:
         async with asyncio.timeout(cfg.session_timeout_min * 60):
             stream = query(prompt=prompt, options=options(repo, cfg, budget_usd, resume, **extra))
@@ -195,7 +207,11 @@ async def run_session(repo: Path, prompt: str, cfg: Config, budget_usd: float,
                             api_errors.add(message.error)
                             error_text += [b.text for b in message.content if isinstance(b, TextBlock)]
                         if message.usage and message.message_id:
+                            new = message.message_id not in usage_by_message
                             usage_by_message[message.message_id] = message.usage
+                            if new and len(usage_by_message) % 20 == 0:  # live, approximate
+                                log.info("COST so far ~$%.2f (%d API calls, list-price estimate)",
+                                         estimate_cost(usage_by_message), len(usage_by_message))
                     elif isinstance(message, ResultMessage):
                         result = message
     except TimeoutError:
@@ -204,7 +220,8 @@ async def run_session(repo: Path, prompt: str, cfg: Config, budget_usd: float,
     except ResultError as e:  # the CLI exits non-zero after an error result
         api_status = e.api_error_status
         error_text += [str(e), *(e.errors or [])]
-    except ClaudeSDKError as e:
+    except ClaudeSDKError as e:  # the harness broke, not the audit: retry (resume) it later
+        crashed = True
         error_text.append(f"{type(e).__name__}: {e}")
         log.info("SDK error: %s", error_text[-1])
     if result is not None:
@@ -217,6 +234,8 @@ async def run_session(repo: Path, prompt: str, cfg: Config, budget_usd: float,
     else:
         out.cost_usd = estimate_cost(usage_by_message)
     status = classify(api_errors, "\n".join(error_text), result, api_status)
+    if crashed and status == "error":
+        status = "transient"
     if out.status != "timeout" or status == "billing_exhausted":
         out.status = status
     out.detail = "\n".join(t for t in error_text if t)[:500]
