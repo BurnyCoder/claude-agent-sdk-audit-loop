@@ -28,6 +28,14 @@ def test_round_resumes_and_rolls_over():
     assert ledger.current_round([rec("a", 7, "ok", scope="other")], "s", projects) == (1, set())
 
 
+def test_attempt_cap_and_last_attempt():
+    crashes = [rec("a", 1, "transient") for _ in range(ledger.MAX_ATTEMPTS)]
+    assert ledger.current_round(crashes, "s", ["a", "b"]) == (1, {"a"})
+    two = [rec("a", 1, "transient"), {**rec("a", 1, "transient"), "session_id": "x"}]
+    assert ledger.last_attempt(two, "s", "a", 1)["session_id"] == "x"
+    assert ledger.last_attempt(two, "s", "a", 2) is None
+
+
 def test_report_has_no_local_paths():
     text = ledger.report([{**rec("a", 1, "ok"), "project": "/somewhere/private/a"}])
     assert "/somewhere/private" not in text

@@ -5,7 +5,7 @@ from claude_agent_sdk import PermissionResultAllow, ResultMessage, ToolPermissio
 from claude_agent_sdk._internal.transport.subprocess_cli import SubprocessCLITransport
 
 from audit_loop.config import Config
-from audit_loop.session import agent_env, allow_everything, classify, estimate_cost, first_heading, options
+from audit_loop.session import _text, agent_env, allow_everything, classify, estimate_cost, first_heading, options
 
 
 def result(is_error=False, subtype="success"):
@@ -50,6 +50,12 @@ def test_cli_flags_are_unrestricted_opus_xhigh():
     assert "--tools" not in cmd and "--disallowedTools" not in cmd and "--max-turns" not in cmd
     assert "--system-prompt" not in cmd  # the claude_code preset, not the SDK's minimal prompt
     assert opts.env["ANTHROPIC_API_KEY"] == "k"
+
+
+def test_large_messages_and_images():
+    assert options(Path("."), Config(roots=[]), 1.0).max_buffer_size >= 100 * 1024 * 1024
+    image = {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "A" * 5000}}
+    assert _text([image, {"type": "text", "text": "ok"}]) == "<image image/png, 5000 base64 chars>\nok"
 
 
 def test_workspace_id_becomes_header():
