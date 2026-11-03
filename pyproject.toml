@@ -1,0 +1,25 @@
+[project]
+name = "audit-loop"
+version = "0.1.0"
+description = "Loop Claude Agent SDK sessions (default: fact-check audits) over every Git repo in folders you choose, until a budget or the API credits run out."
+readme = "README.md"
+authors = [
+    { name = "BurnyCoder", email = "happymancz@email.cz" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "claude-agent-sdk>=0.2.177",
+    "python-dotenv>=1.2.4",
+]
+
+[project.scripts]
+audit-loop = "audit_loop.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.13.6,<0.14.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+]

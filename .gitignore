@@ -1,0 +1,17 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Local configuration and secrets (see .env.example)
+.env
+
+# Run artifacts: full transcripts can contain secrets printed by tools
+logs/
+runs/
