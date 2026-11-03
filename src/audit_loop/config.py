@@ -87,7 +87,7 @@ def build_config(
     overrides: dict[str, str | None] | None = None,
 ) -> Config:
     """Merge flags (``roots``/``exclude``/``overrides``) over AUDIT_* env over env files."""
-    file_env = read_env_files([Path(p).expanduser() for p in (env_files or [".env"])])
+    file_env = read_env_files([Path(p).expanduser() for p in (env_files if env_files is not None else [".env"])])
 
     def get(key: str, default: str | None = None) -> str | None:
         flag = (overrides or {}).get(key)
