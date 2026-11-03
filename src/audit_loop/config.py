@@ -7,6 +7,7 @@ anyone can point the loop at their own projects (see .env.example).
 import os
 import re
 from dataclasses import dataclass, field
+from datetime import datetime
 from importlib import resources
 from pathlib import Path
 
@@ -34,6 +35,7 @@ class Config:
     effort: str = "xhigh"
     max_total_usd: float = 100.0
     session_timeout_min: float = 240.0
+    stop_at: datetime | None = None  # no session runs past this (e.g. when free credits expire)
     credentials: dict[str, str] = field(default_factory=dict)  # CREDENTIAL_KEYS that are set
 
 
@@ -64,6 +66,16 @@ def _split(value: str | None) -> list[str]:
     return [part.strip() for part in (value or "").split(",") if part.strip()]
 
 
+def parse_time(value: str | None) -> datetime | None:
+    """ISO 8601 time; one without an offset is taken as this machine's local time."""
+    return datetime.fromisoformat(value).astimezone() if value else None
+
+
+def claude_config_dir() -> Path:
+    """Where Claude Code keeps settings and transcripts: https://code.claude.com/docs/en/env-vars"""
+    return Path(os.environ.get("CLAUDE_CONFIG_DIR", "~/.claude")).expanduser()
+
+
 def default_prompt() -> str:
     return resources.files("audit_loop").joinpath("prompts/fact_check.md").read_text(encoding="utf-8")
 
@@ -92,5 +104,6 @@ def build_config(
         effort=get("AUDIT_EFFORT", "xhigh"),
         max_total_usd=float(get("AUDIT_MAX_TOTAL_USD", "100")),
         session_timeout_min=float(get("AUDIT_SESSION_TIMEOUT_MIN", "240")),
+        stop_at=parse_time(get("AUDIT_STOP_AT")),
         credentials={k: v for k in CREDENTIAL_KEYS if (v := os.environ.get(k) or file_env.get(k))},
     )

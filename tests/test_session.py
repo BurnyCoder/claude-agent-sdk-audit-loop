@@ -61,6 +61,7 @@ def test_large_messages_and_images():
 def test_workspace_id_becomes_header():
     env = agent_env({"ANTHROPIC_API_KEY": "k", "ANTHROPIC_WORKSPACE_ID": "wrkspc_1"})
     assert env["ANTHROPIC_CUSTOM_HEADERS"] == "anthropic-workspace-id: wrkspc_1"
+    assert env["CLAUDE_CODE_SUBPROCESS_ENV_SCRUB"] == "1"  # agent subprocesses cannot see the key
     assert "ANTHROPIC_CUSTOM_HEADERS" not in agent_env({"ANTHROPIC_API_KEY": "k"})
 
 
@@ -74,3 +75,18 @@ def test_first_heading(tmp_path):
     md.write_text("intro\n\n## First rule\ntext\n# Later\n", encoding="utf-8")
     assert first_heading(md) == "## First rule"
     assert first_heading(tmp_path / "missing.md") is None
+
+
+def test_transcript_cost_counts_subagents_once(tmp_path):
+    import json
+    from audit_loop.session import transcript_cost, usage_cost
+    usage = {"input_tokens": 1_000_000, "cache_creation": {"ephemeral_5m_input_tokens": 0, "ephemeral_1h_input_tokens": 1_000_000},
+             "server_tool_use": {"web_search_requests": 3}}
+    assert abs(usage_cost(usage) - (4.0 + 8.0 + 0.03)) < 1e-9
+    project = tmp_path / "projects" / "some-project"
+    (project / "sid" / "subagents").mkdir(parents=True)
+    line = lambda mid: json.dumps({"type": "assistant", "message": {"id": mid, "usage": {"output_tokens": 1_000_000}}})
+    (project / "sid.jsonl").write_text(line("m1") + "\n" + line("m1") + "\nnot json\n", encoding="utf-8")
+    (project / "sid" / "subagents" / "agent-a.jsonl").write_text(line("m2") + "\n", encoding="utf-8")
+    assert transcript_cost("sid", tmp_path) == 40.0
+    assert transcript_cost("other", tmp_path) is None and transcript_cost(None, tmp_path) is None
