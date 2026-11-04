@@ -19,7 +19,7 @@ from pathlib import Path
 
 from audit_loop import ledger
 from audit_loop.config import Config, build_config, claude_config_dir, scrub_inherited_claude_env
-from audit_loop.discover import Repo, discover
+from audit_loop.discover import Repo, discover, prioritize
 from audit_loop.logs import log, session_log, setup_console
 from audit_loop.session import check, push_prompt, run_session, transcript_cost, unpushed_commits
 
@@ -80,7 +80,7 @@ def audit_repo(repo: Repo, cfg: Config, round_no: int, scope: str, budget_usd: f
 def run_loop(cfg: Config, rounds: int) -> int:
     """Audit repos one at a time, round after round, until a stop condition (see module doc)."""
     scope = f"{socket.gethostname()}|{sys.platform}|" + ",".join(str(r.resolve()) for r in cfg.roots)
-    repos = discover(cfg.roots, cfg.exclude)
+    repos = prioritize(discover(cfg.roots, cfg.exclude), cfg.priority)
     log.info("%d repos under %s; cap $%.2f, spent so far $%.2f", len(repos), [str(r) for r in cfg.roots],
              cfg.max_total_usd, ledger.total_cost(ledger.read(cfg.ledger)))
     if not repos:
@@ -201,7 +201,7 @@ def main(argv: list[str] | None = None) -> int:
         if removed:
             log.info("Removed %d inherited ANTHROPIC_*/CLAUDE* variables: %s", len(removed), ", ".join(removed))
     if args.command == "list":
-        repos = discover(cfg.roots, cfg.exclude)
+        repos = prioritize(discover(cfg.roots, cfg.exclude), cfg.priority)
         for repo in repos:
             log.info("%s  %s  %s", time.strftime("%Y-%m-%d", time.gmtime(repo.head_time)), repo.slug, repo.path)
         log.info("%d repos", len(repos))

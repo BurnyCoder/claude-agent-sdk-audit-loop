@@ -236,6 +236,7 @@ async def run_session(repo: Path, prompt: str, cfg: Config, budget_usd: float,
     api_status: int | None = None
     usage_by_message: dict[str, dict] = {}
     crashed = False
+    turns = 0
     try:
         async with asyncio.timeout(cfg.session_timeout_min * 60):
             stream = query(prompt=prompt, options=options(repo, cfg, budget_usd, resume, **extra))
@@ -260,8 +261,9 @@ async def run_session(repo: Path, prompt: str, cfg: Config, budget_usd: float,
                                     log.info("Budget reached; stopping the session")
                                     capped = True
                                     break
-                    elif isinstance(message, ResultMessage):
+                    elif isinstance(message, ResultMessage):  # one per turn, incl. background-task turns
                         result = message
+                        turns += message.num_turns
     except TimeoutError:
         out.status = "timeout"
         log.info("Session hit the %.0f-minute wall-clock guard", cfg.session_timeout_min)
@@ -274,7 +276,7 @@ async def run_session(repo: Path, prompt: str, cfg: Config, budget_usd: float,
         log.info("SDK error: %s", error_text[-1])
     if result is not None:
         out.cost_usd = result.total_cost_usd or 0.0
-        out.turns = result.num_turns
+        out.turns = turns
         out.session_id = result.session_id or out.session_id
         api_status = api_status or result.api_error_status
         if result.is_error:
