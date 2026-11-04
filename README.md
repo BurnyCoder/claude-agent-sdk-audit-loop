@@ -93,7 +93,7 @@ Session options, all documented in the [Python SDK reference](https://code.claud
 
 The only normal stops are:
 - The API reports that the credit balance is exhausted.
-- The ledger total reaches `AUDIT_MAX_TOTAL_USD`. The last session gets exactly the remainder as its budget.
+- The ledger total reaches `AUDIT_MAX_TOTAL_USD`: no new session starts after that. A session already running may go on to finish until the total reaches `AUDIT_HARD_CAP_USD` (default: the same value), which is its budget.
 
 Everything else continues:
 - **Rate limits, 5xx errors and harness crashes** back off, then resume the same session (same session ID, so paid-for work is kept). Each repository gets at most 3 attempts per round.
