@@ -34,7 +34,8 @@ class Config:
     prompt: str = ""
     model: str = "claude-opus-5-5"
     effort: str = "xhigh"
-    max_total_usd: float = 100.0
+    max_total_usd: float = 100.0  # no new session starts once the ledger total reaches this
+    hard_cap_usd: float = 100.0  # a running session may go on to finish until the total reaches this
     session_timeout_min: float = 240.0
     stop_at: datetime | None = None  # no session runs past this (e.g. when free credits expire)
     credentials: dict[str, str] = field(default_factory=dict)  # CREDENTIAL_KEYS that are set
@@ -105,6 +106,8 @@ def build_config(
         model=get("AUDIT_MODEL", "claude-opus-5-5"),
         effort=get("AUDIT_EFFORT", "xhigh"),
         max_total_usd=float(get("AUDIT_MAX_TOTAL_USD", "100")),
+        hard_cap_usd=max(float(get("AUDIT_HARD_CAP_USD") or get("AUDIT_MAX_TOTAL_USD", "100")),
+                         float(get("AUDIT_MAX_TOTAL_USD", "100"))),
         session_timeout_min=float(get("AUDIT_SESSION_TIMEOUT_MIN", "240")),
         stop_at=parse_time(get("AUDIT_STOP_AT")),
         credentials={k: v for k in CREDENTIAL_KEYS if (v := os.environ.get(k) or file_env.get(k))},

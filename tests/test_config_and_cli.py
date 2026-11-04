@@ -63,3 +63,13 @@ def test_stop_at_parses_with_and_without_offset(monkeypatch):
     assert cfg.stop_at == datetime(2026, 11, 4, 23, tzinfo=timezone.utc)
     assert build_config(env_files=[], overrides={"AUDIT_STOP_AT": "2026-11-04T20:00"}).stop_at.tzinfo is not None
     assert build_config(env_files=[]).stop_at is None
+
+
+def test_hard_cap_defaults_to_and_never_undercuts_the_start_cap(monkeypatch):
+    for key in ("AUDIT_MAX_TOTAL_USD", "AUDIT_HARD_CAP_USD"):
+        monkeypatch.delenv(key, raising=False)
+    cfg = build_config(env_files=[], overrides={"AUDIT_MAX_TOTAL_USD": "100"})
+    assert (cfg.max_total_usd, cfg.hard_cap_usd) == (100.0, 100.0)
+    cfg = build_config(env_files=[], overrides={"AUDIT_MAX_TOTAL_USD": "100", "AUDIT_HARD_CAP_USD": "200"})
+    assert cfg.hard_cap_usd == 200.0
+    assert build_config(env_files=[], overrides={"AUDIT_MAX_TOTAL_USD": "100", "AUDIT_HARD_CAP_USD": "50"}).hard_cap_usd == 100.0

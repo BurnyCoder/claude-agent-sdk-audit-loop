@@ -65,7 +65,7 @@ def audit_repo(repo: Repo, cfg: Config, round_no: int, scope: str, budget_usd: f
                            if r.get("session_id") == outcome.session_id)
             outcome.cost_usd = max(outcome.cost_usd, seen - recorded)
         if outcome.status == "budget_cap":
-            outcome.detail = f"stopped at the shared cap of ${cfg.max_total_usd:.2f}. " + outcome.detail
+            outcome.detail = f"stopped at the hard cap of ${cfg.hard_cap_usd:.2f}. " + outcome.detail
         log.info("=== DONE %s: %s, $%.2f, %d turns, %d unpushed ===",
                  repo.path.name, outcome.status, outcome.cost_usd, outcome.turns, len(unpushed))
     return {
@@ -81,8 +81,8 @@ def run_loop(cfg: Config, rounds: int) -> int:
     """Audit repos one at a time, round after round, until a stop condition (see module doc)."""
     scope = f"{socket.gethostname()}|{sys.platform}|" + ",".join(str(r.resolve()) for r in cfg.roots)
     repos = prioritize(discover(cfg.roots, cfg.exclude), cfg.priority)
-    log.info("%d repos under %s; cap $%.2f, spent so far $%.2f", len(repos), [str(r) for r in cfg.roots],
-             cfg.max_total_usd, ledger.total_cost(ledger.read(cfg.ledger)))
+    log.info("%d repos under %s; new sessions below $%.2f, hard cap $%.2f, spent so far $%.2f", len(repos),
+             [str(r) for r in cfg.roots], cfg.max_total_usd, cfg.hard_cap_usd, ledger.total_cost(ledger.read(cfg.ledger)))
     if not repos:
         return 0
     passes, failures, auth_failures = 0, 0, 0
@@ -92,10 +92,11 @@ def run_loop(cfg: Config, rounds: int) -> int:
         while queue:
             repo = queue[0]
             records = ledger.read(cfg.ledger)
-            remaining = cfg.max_total_usd - ledger.total_cost(records)
-            if remaining < 0.05:
-                log.info("Spend cap of $%.2f reached; stopping", cfg.max_total_usd)
+            spent = ledger.total_cost(records)
+            if cfg.max_total_usd - spent < 0.05:
+                log.info("Spend cap of $%.2f reached; no new sessions, stopping", cfg.max_total_usd)
                 return EXIT_EXHAUSTED
+            remaining = cfg.hard_cap_usd - spent  # a started session may run past the cap to finish, up to here
             minutes_left = (cfg.stop_at - datetime.now().astimezone()).total_seconds() / 60 if cfg.stop_at else None
             if minutes_left is not None and minutes_left < 1:
                 log.info("Stop time %s reached; stopping", cfg.stop_at.isoformat())
@@ -167,7 +168,8 @@ def parser() -> argparse.ArgumentParser:
     common.add_argument("--prompt-file", help="prompt instead of the bundled fact-check prompt (AUDIT_PROMPT_FILE)")
     common.add_argument("--model", help="model id (AUDIT_MODEL, default claude-opus-5-5)")
     common.add_argument("--effort", help="low|medium|high|xhigh|max (AUDIT_EFFORT, default xhigh)")
-    common.add_argument("--max-total-usd", help="stop when the ledger total reaches this (AUDIT_MAX_TOTAL_USD, default 100)")
+    common.add_argument("--max-total-usd", help="start no new session once the ledger total reaches this (AUDIT_MAX_TOTAL_USD, default 100)")
+    common.add_argument("--hard-cap-usd", help="a running session may finish until the total reaches this (AUDIT_HARD_CAP_USD, default = --max-total-usd)")
     common.add_argument("--session-timeout-min", help="wall-clock guard per session (AUDIT_SESSION_TIMEOUT_MIN, default 240)")
     common.add_argument("--stop-at", help="ISO time after which no session runs, e.g. when credits expire (AUDIT_STOP_AT)")
     common.add_argument("--keep-env", action="store_true",
@@ -192,7 +194,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "chain":
         return chain(args.commands)
     flags = {"AUDIT_LEDGER": args.ledger, "AUDIT_LOG_DIR": args.log_dir, "AUDIT_PROMPT_FILE": args.prompt_file,
-             "AUDIT_MODEL": args.model, "AUDIT_EFFORT": args.effort, "AUDIT_MAX_TOTAL_USD": args.max_total_usd,
+             "AUDIT_MODEL": args.model, "AUDIT_EFFORT": args.effort, "AUDIT_MAX_TOTAL_USD": args.max_total_usd, "AUDIT_HARD_CAP_USD": args.hard_cap_usd,
              "AUDIT_SESSION_TIMEOUT_MIN": args.session_timeout_min, "AUDIT_STOP_AT": args.stop_at}
     excludes = [name for value in args.exclude or [] for name in value.split(",") if name.strip()]
     cfg = build_config(args.root, excludes or None, args.env_file, flags)
