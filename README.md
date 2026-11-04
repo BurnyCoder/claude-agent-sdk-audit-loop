@@ -6,7 +6,7 @@ Runs one [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk/overview) 
 
 **How it works:**
 - **Same harness as Claude Code.** Each session is the full Claude Code agent: the `claude_code` system-prompt preset, your `~/.claude/CLAUDE.md` and settings, and all built-in tools, including WebSearch and WebFetch.
-- **Unattended.** Permissions are bypassed and there is no turn limit, so a session runs without stopping for approval.
+- **Unattended.** Every permission prompt is approved automatically and there is no turn limit, so a session runs without stopping for approval.
 - **Model.** The default is `claude-opus-5-5` at effort `xhigh`.
 - **Logging and accounting.** The full transcript streams to your terminal and a log file as it happens. A shared JSONL ledger tracks spend, so a restarted run continues where it stopped.
 
@@ -85,7 +85,7 @@ Session options, all documented in the [Python SDK reference](https://code.claud
 |---|---|---|
 | `system_prompt` | `{"type": "preset", "preset": "claude_code"}` | Without it the SDK uses a minimal prompt ([docs](https://code.claude.com/docs/en/agent-sdk/modifying-system-prompts)) |
 | `setting_sources` | `None` (user, project, local) | Loads `~/.claude/CLAUDE.md`, your settings and the project's `CLAUDE.md` |
-| `permission_mode` + `can_use_tool` | `bypassPermissions` + allow-all callback | Unattended; the callback also approves `ask` rules from your settings. Your `deny` rules still apply |
+| `permission_mode` + `can_use_tool` | `bypassPermissions` + allow-all callback | Unattended. Because sessions also set `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`, the CLI logs "Permission mode forced to default" and asks about each tool call; every such prompt, `ask` rules from your settings and `AskUserQuestion` included, goes to the allow-all callback, so nothing is blocked. Your `deny` rules still apply |
 | `model`, `effort`, `thinking` | `claude-opus-5-5`, `xhigh`, adaptive with summaries | Thinking summaries appear in the transcript |
 | `max_budget_usd` | cap minus ledger total | Enforces only the shared cap; there is no per-repository limit. Backed by the loop's own transcript-based check |
 
