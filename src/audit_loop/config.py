@@ -28,6 +28,7 @@ _KEEP_ENV = {*CREDENTIAL_KEYS, "CLAUDE_CONFIG_DIR"}
 class Config:
     roots: list[Path]
     exclude: set[str] = field(default_factory=set)
+    priority: list[str] = field(default_factory=list)  # folder names audited first each round, in order
     ledger: Path = Path("runs/ledger.jsonl")
     log_dir: Path = Path("logs")
     prompt: str = ""
@@ -97,6 +98,7 @@ def build_config(
     return Config(
         roots=[Path(r).expanduser() for r in (roots or _split(get("AUDIT_ROOTS")))],
         exclude={name.lower() for name in (exclude or _split(get("AUDIT_EXCLUDE")))},
+        priority=[name.lower() for name in _split(get("AUDIT_PRIORITY"))],
         ledger=Path(get("AUDIT_LEDGER", "runs/ledger.jsonl")).expanduser(),
         log_dir=Path(get("AUDIT_LOG_DIR", "logs")).expanduser(),
         prompt=Path(prompt_file).expanduser().read_text(encoding="utf-8") if prompt_file else default_prompt(),

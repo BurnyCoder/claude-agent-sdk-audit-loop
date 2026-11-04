@@ -2,7 +2,7 @@ import os
 import subprocess
 from pathlib import Path
 
-from audit_loop.discover import discover, github_slug
+from audit_loop.discover import Repo, discover, github_slug, prioritize
 
 
 def make_repo(path: Path, remote: str | None, files: bool = True, date: str = "2026-01-01T00:00:00") -> None:
@@ -51,3 +51,9 @@ def test_roots_keep_their_order(tmp_path):
     make_repo(tmp_path / "b" / "newer", "https://github.com/me/b.git", date="2026-05-01T00:00:00")
     repos = discover([tmp_path / "a", tmp_path / "b"], set(), check_push=False)
     assert [r.path.name for r in repos] == ["older", "newer"]
+
+
+def test_prioritize_moves_named_repos_first_and_keeps_the_rest():
+    repos = [Repo(Path(n), f"me/{n}", 0) for n in ("a", "b", "c", "d")]
+    assert [r.path.name for r in prioritize(repos, ["C", "b"])] == ["c", "b", "a", "d"]
+    assert prioritize(repos, []) == repos

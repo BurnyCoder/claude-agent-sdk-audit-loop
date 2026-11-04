@@ -39,7 +39,7 @@ To work on the code instead, clone the repository, then run `uv sync` and `uv ru
 
 ## Use it on your own folders
 
-1. Copy `.env.example` to `.env` and set `ANTHROPIC_API_KEY` and `AUDIT_ROOTS`. Each root is a folder whose immediate subfolders are your projects. Optionally set `AUDIT_EXCLUDE` (folder names to skip) and `AUDIT_MAX_TOTAL_USD`. If your key is not scoped to a workspace, also set `ANTHROPIC_WORKSPACE_ID`; the tool sends it as the `anthropic-workspace-id` header through `ANTHROPIC_CUSTOM_HEADERS`.
+1. Copy `.env.example` to `.env` and set `ANTHROPIC_API_KEY` and `AUDIT_ROOTS`. Each root is a folder whose immediate subfolders are your projects. Optionally set `AUDIT_EXCLUDE` (folder names to skip), `AUDIT_PRIORITY` (folder names to audit first in each round, in order) and `AUDIT_MAX_TOTAL_USD`. If your key is not scoped to a workspace, also set `ANTHROPIC_WORKSPACE_ID`; the tool sends it as the `anthropic-workspace-id` header through `ANTHROPIC_CUSTOM_HEADERS`.
 2. See what would be audited. This costs nothing:
    ```bash
    audit-loop list

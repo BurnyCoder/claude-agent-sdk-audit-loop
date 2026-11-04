@@ -70,3 +70,9 @@ def discover(roots: list[Path], exclude: set[str], check_push: bool = True) -> l
             newest_clone[repo.slug] = repo
     kept = [r for r in found if newest_clone[r.slug] is r]
     return [r for r in kept if can_push(r.slug)] if check_push else kept
+
+
+def prioritize(repos: list[Repo], first: list[str]) -> list[Repo]:
+    """Move repos whose folder name is in ``first`` to the front, in that order; keep the rest as is."""
+    rank = {name.lower(): i for i, name in enumerate(first)}
+    return sorted(repos, key=lambda r: rank.get(r.path.name.lower(), len(rank)))  # sorted() is stable
